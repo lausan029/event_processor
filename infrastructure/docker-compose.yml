@@ -1,0 +1,253 @@
+# High-Scale Event Processing Infrastructure
+# MongoDB Sharded Cluster + PostgreSQL 16 + Redis 7 + Scalable Workers
+
+services:
+  # ============================================
+  # MongoDB Sharded Cluster
+  # ============================================
+  
+  # Config Server (stores cluster metadata)
+  mongo-configsvr:
+    image: mongo:7
+    container_name: mongo-configsvr
+    command: mongod --configsvr --replSet configReplSet --port 27019 --bind_ip_all
+    volumes:
+      - mongo-configsvr-data:/data/configdb
+    networks:
+      - event-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27019", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # Shard 1 (Replica Set with single node for dev)
+  mongo-shard1:
+    image: mongo:7
+    container_name: mongo-shard1
+    command: mongod --shardsvr --replSet shard1ReplSet --port 27018 --bind_ip_all
+    volumes:
+      - mongo-shard1-data:/data/db
+    networks:
+      - event-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27018", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # Shard 2 (Replica Set with single node for dev)
+  mongo-shard2:
+    image: mongo:7
+    container_name: mongo-shard2
+    command: mongod --shardsvr --replSet shard2ReplSet --port 27018 --bind_ip_all
+    volumes:
+      - mongo-shard2-data:/data/db
+    networks:
+      - event-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27018", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # Replica Set Initialization Service (runs BEFORE mongos)
+  mongo-rs-init:
+    image: mongo:7
+    container_name: mongo-rs-init
+    depends_on:
+      mongo-configsvr:
+        condition: service_healthy
+      mongo-shard1:
+        condition: service_healthy
+      mongo-shard2:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/bash", "/scripts/init-replica-sets.sh"]
+    networks:
+      - event-network
+    restart: "no"
+
+  # Mongos (Query Router / Gateway)
+  # Only starts AFTER replica sets are initialized
+  mongos:
+    image: mongo:7
+    container_name: mongos
+    command: mongos --configdb configReplSet/mongo-configsvr:27019 --port 27017 --bind_ip_all
+    ports:
+      - "27017:27017"
+    depends_on:
+      mongo-rs-init:
+        condition: service_completed_successfully
+    networks:
+      - event-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--port", "27017", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  # MongoDB Sharding & Database Setup (runs AFTER mongos is ready)
+  mongo-init:
+    image: mongo:7
+    container_name: mongo-init
+    depends_on:
+      mongos:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["/bin/bash", "/scripts/init-sharding.sh"]
+    networks:
+      - event-network
+    restart: "no"
+
+  # ============================================
+  # PostgreSQL 16 (Master Data)
+  # ============================================
+  
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: event_processor
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./scripts/init-postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - event-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d event_processor"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ============================================
+  # Redis 7 (Ingestion Buffer / Streams / Cache)
+  # ============================================
+  
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - event-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ============================================
+  # Backend Service (API Server)
+  # ============================================
+  
+  backend:
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile.backend
+    container_name: event-backend
+    environment:
+      NODE_ENV: development
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 3001
+      MONGO_URI: mongodb://mongos:27017
+      MONGO_DATABASE: event_processor
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/event_processor?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    ports:
+      - "3001:3001"
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - event-network
+    restart: on-failure
+
+  # ============================================
+  # Event Workers (Scalable Stream Consumers)
+  # Scale with: docker-compose up -d --scale worker=3
+  # ============================================
+  
+  worker:
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile.worker
+    environment:
+      NODE_ENV: production
+      MONGO_URI: mongodb://mongos:27017
+      MONGO_DATABASE: event_processor
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - event-network
+    restart: on-failure
+
+  # ============================================
+  # Frontend Service
+  # ============================================
+  
+  frontend:
+    build:
+      context: ..
+      dockerfile: infrastructure/Dockerfile.frontend
+    container_name: event-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:3001
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - event-network
+    restart: on-failure
+
+# ============================================
+# Networks
+# ============================================
+
+networks:
+  event-network:
+    driver: bridge
+    name: event-processor-network
+
+# ============================================
+# Volumes (Persistent Storage)
+# ============================================
+
+volumes:
+  mongo-configsvr-data:
+    name: event-mongo-configsvr
+  mongo-shard1-data:
+    name: event-mongo-shard1
+  mongo-shard2-data:
+    name: event-mongo-shard2
+  postgres-data:
+    name: event-postgres
+  redis-data:
+    name: event-redis

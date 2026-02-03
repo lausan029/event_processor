@@ -1,0 +1,95 @@
+# Worker Dockerfile
+# Multi-stage build for Event Worker Process
+
+# ============================================
+# Stage 1: Install & Build
+# ============================================
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies needed for native modules and OpenSSL
+RUN apk add --no-cache libc6-compat openssl
+
+# Copy all package files for workspace resolution
+COPY package.json package-lock.json ./
+COPY backend/package.json ./backend/
+COPY shared/package.json ./shared/
+
+# Copy source files (needed for workspaces to link correctly)
+COPY shared/ ./shared/
+COPY backend/ ./backend/
+
+# Install all dependencies (handles workspaces automatically)
+RUN npm ci
+
+# Build shared types first
+WORKDIR /app/shared
+RUN npm run build
+
+# Generate Prisma client and build backend (includes worker)
+WORKDIR /app/backend
+RUN npx prisma generate
+RUN npm run build
+
+# ============================================
+# Stage 2: Production Dependencies Only
+# ============================================
+FROM node:20-alpine AS deps
+
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat openssl
+
+COPY package.json package-lock.json ./
+COPY backend/package.json ./backend/
+COPY shared/package.json ./shared/
+COPY backend/prisma ./backend/prisma
+
+# Install production dependencies only
+RUN npm ci --omit=dev
+
+# Generate Prisma client in production deps
+WORKDIR /app/backend
+RUN npx prisma generate
+
+# ============================================
+# Stage 3: Production Runner
+# ============================================
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# Install OpenSSL for Prisma - critical for database connectivity
+RUN apk add --no-cache openssl libc6-compat
+
+# Security: Run as non-root user
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 worker
+
+# Copy production node_modules (includes generated Prisma client)
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy built artifacts
+COPY --from=builder /app/shared/dist ./shared/dist
+COPY --from=builder /app/shared/package.json ./shared/
+COPY --from=builder /app/backend/dist ./backend/dist
+COPY --from=builder /app/backend/package.json ./backend/
+COPY --from=builder /app/backend/prisma ./backend/prisma
+COPY --from=builder /app/package.json ./
+
+# Set environment
+ENV NODE_ENV=production
+ENV MONGO_URI=mongodb://mongos:27017
+ENV MONGO_DATABASE=event_processor
+ENV DATABASE_URL=postgresql://postgres:postgres@postgres:5432/event_processor?schema=public
+ENV REDIS_HOST=redis
+ENV REDIS_PORT=6379
+
+# Switch to non-root user
+USER worker
+
+WORKDIR /app/backend
+
+# Worker entry point
+CMD ["node", "dist/worker.js"]

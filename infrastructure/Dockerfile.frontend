@@ -1,0 +1,54 @@
+# Frontend Dockerfile
+# Multi-stage build for React + Vite
+
+# ============================================
+# Stage 1: Install & Build
+# ============================================
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies needed for native modules
+RUN apk add --no-cache libc6-compat
+
+# Copy all package files for workspace resolution
+COPY package.json package-lock.json ./
+COPY frontend/package.json ./frontend/
+COPY shared/package.json ./shared/
+
+# Copy source files (needed for workspaces to link correctly)
+COPY shared/ ./shared/
+COPY frontend/ ./frontend/
+
+# Install all dependencies (handles workspaces automatically)
+RUN npm ci
+
+# Build shared types first
+WORKDIR /app/shared
+RUN npm run build
+
+# Build frontend
+WORKDIR /app/frontend
+RUN npm run build
+
+# ============================================
+# Stage 2: Production with Nginx
+# ============================================
+FROM nginx:alpine AS runner
+
+# Install curl for healthcheck
+RUN apk add --no-cache curl
+
+# Copy built static files
+COPY --from=builder /app/frontend/dist /usr/share/nginx/html
+
+# Copy nginx configuration
+COPY infrastructure/nginx.conf /etc/nginx/conf.d/default.conf
+
+# Health check - use curl instead of wget
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://127.0.0.1:3000/ || exit 1
+
+EXPOSE 3000
+
+CMD ["nginx", "-g", "daemon off;"]
