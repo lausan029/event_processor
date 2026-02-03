@@ -1,0 +1,72 @@
+// Prisma Schema for PostgreSQL
+// Master data: Users, Auth, Settings
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum UserRole {
+  ADMIN
+  OPERATOR
+  VIEWER
+  API_CLIENT
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  name         String
+  role         UserRole   @default(VIEWER)
+  status       UserStatus @default(PENDING_VERIFICATION)
+  apiKeyHash   String?    @map("api_key_hash")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  apiKeys      ApiKey[]
+  settings     UserSetting[]
+
+  @@map("users")
+}
+
+model ApiKey {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  keyHash      String    @unique @map("key_hash")
+  name         String
+  lastUsedAt   DateTime? @map("last_used_at")
+  expiresAt    DateTime? @map("expires_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  revokedAt    DateTime? @map("revoked_at")
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model UserSetting {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  key          String
+  value        String
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, key])
+  @@map("user_settings")
+}
