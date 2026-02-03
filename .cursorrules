@@ -1,0 +1,33 @@
+# STANDARD RULES: HIGH-SCALE EVENT SYSTEM (50k EPS)
+
+## 1. Project Context & Stack
+- **Context**: Real-time distributed event processing system for millions of daily events.
+- **Backend**: Node.js (v20+) with TypeScript and Fastify (for maximum throughput).
+- **Frontend**: React (Vite), TypeScript, Tailwind CSS, and ShadcnUI.
+- **Persistence**: 
+    - **Postgres**: Master data (Users, Auth, Settings).
+    - **MongoDB**: High-volume event storage (Sharded by hashed 'userId').
+    - **Redis**: Ingestion buffer (Streams), Deduplication, and Metrics cache.
+- **DevOps**: Docker, Docker Compose, and GitHub Actions for CI/CD.
+
+## 2. Engineering Principles (Mandatory)
+- **SOLID & DRY**: Maintain strict separation of concerns. Use Dependency Injection.
+- **KISS**: Avoid over-engineering unless performance (50k EPS) justifies it.
+- **Clean Code**: Meaningful naming, small functions, and comprehensive TypeScript types (No 'any').
+- **Separation of Concerns**: Folders: `/src/domain`, `/src/infrastructure`, `/src/application`.
+
+## 3. High-Scale Architecture (50k EPS)
+- **Asynchronous Ingestion**: Ingestion API -> Redis Stream -> Workers -> MongoDB.
+- **Non-blocking Flow**: No direct DB writes during the ingestion POST request.
+- **Batching Strategy**: Workers MUST use `bulkWrite` for MongoDB (batches of 500-1000).
+- **Sharding Awareness**: All Mongo queries must consider the 'userId' shard key.
+
+## 4. Resilience & Security
+- **Idempotency**: Redis `SETNX` (10 min TTL) to discard duplicate `eventId`.
+- **Fault Tolerance**: Exponential Backoff + Jitter for retries. Implement Dead Letter Queues (DLQ).
+- **Stateless Auth**: API Keys/JWT cached in Redis to prevent Postgres saturation at scale.
+
+## 5. Testing & Observability
+- **Testing**: Unit tests for logic, Integration tests with Testcontainers.
+- **Logging**: Structured JSON logs using Pino.js.
+- **Metrics**: Track Events Per Second (EPS) and processing latency.
