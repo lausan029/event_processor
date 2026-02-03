@@ -1,0 +1,36 @@
+{
+  "name": "event-processor-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "High-scale event processing system (50k EPS)",
+  "workspaces": [
+    "backend",
+    "frontend",
+    "shared"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "build:backend": "npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend",
+    "build:shared": "npm run build --workspace=shared",
+    "build:all": "npm run build:shared && npm run build:backend && npm run build:frontend",
+    "test:backend": "npm run test --workspace=backend",
+    "docker:up": "docker-compose -f infrastructure/docker-compose.yml up -d",
+    "docker:down": "docker-compose -f infrastructure/docker-compose.yml down",
+    "docker:logs": "docker-compose -f infrastructure/docker-compose.yml logs -f",
+    "docker:init": "docker exec -it mongos /scripts/init-db.sh"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "event-processing",
+    "high-scale",
+    "fastify",
+    "mongodb-sharding",
+    "redis-streams"
+  ],
+  "author": "",
+  "license": "MIT"
+}
