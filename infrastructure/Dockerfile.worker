@@ -82,6 +82,14 @@ COPY --from=builder /app/package.json ./
 ENV NODE_ENV=production
 ENV LOG_LEVEL=info
 
+# Ensure proper permissions for worker user (BEFORE switching user)
+RUN chown -R worker:nodejs /app && \
+    chmod -R 755 /app
+
+# Verify files exist (as root before switching)
+RUN test -f /app/backend/dist/worker.js && \
+    echo "✅ Worker file exists at build time"
+
 # Switch to non-root user
 USER worker
 
@@ -89,4 +97,5 @@ WORKDIR /app/backend
 
 # Worker entry point
 # CONSUMER_NAME will be set by Railway via RAILWAY_REPLICA_ID
+# Default CMD (can be overridden by docker-compose command)
 CMD ["node", "dist/worker.js"]

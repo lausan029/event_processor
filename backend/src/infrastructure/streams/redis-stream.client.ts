@@ -53,18 +53,40 @@ export async function initializeConsumerGroup(groupName?: string): Promise<void>
   const redis = getRedisClient();
   const consumerGroup = groupName ?? defaultConsumerGroup;
 
+  console.log(`[REDIS-STREAMS] Attempting to create consumer group '${consumerGroup}' on stream '${STREAM_NAME}'`);
+  
   try {
     // Try to create the consumer group
     // MKSTREAM creates the stream if it doesn't exist
     await redis.xgroup('CREATE', STREAM_NAME, consumerGroup, '0', 'MKSTREAM');
+    console.log(`[REDIS-STREAMS] ✅ Consumer group '${consumerGroup}' created successfully`);
     logger.info({ stream: STREAM_NAME, group: consumerGroup }, 'Consumer group created');
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
     // Check if group already exists (this is expected in most cases)
-    if (error instanceof Error && error.message.includes('BUSYGROUP')) {
+    if (errorMessage.includes('BUSYGROUP')) {
+      console.log(`[REDIS-STREAMS] ℹ️ Consumer group '${consumerGroup}' already exists (this is OK)`);
       logger.info({ stream: STREAM_NAME, group: consumerGroup }, 'Consumer group already exists');
     } else {
+      console.error(`[REDIS-STREAMS] ❌ ERROR creating consumer group:`, errorMessage);
+      logger.error({ error: errorMessage, stream: STREAM_NAME, group: consumerGroup }, 'Failed to create consumer group');
       throw error;
     }
+  }
+  
+  // Verify the group was created/exists
+  try {
+    const groupInfo = await redis.xinfo('GROUPS', STREAM_NAME) as Array<Array<string | number>>;
+    const groupNames = groupInfo.map(g => {
+      const nameIndex = g.indexOf('name');
+      return nameIndex !== -1 ? g[nameIndex + 1] : null;
+    }).filter(Boolean);
+    
+    console.log(`[REDIS-STREAMS] Available consumer groups: ${groupNames.join(', ')}`);
+    logger.debug({ groups: groupNames }, 'Consumer groups verified');
+  } catch (verifyError) {
+    console.warn(`[REDIS-STREAMS] Could not verify consumer groups:`, verifyError instanceof Error ? verifyError.message : String(verifyError));
   }
 }
 
@@ -81,40 +103,62 @@ export async function readFromStream(
   const redis = getRedisClient();
   const consumerGroup = groupName ?? defaultConsumerGroup;
 
-  // XREADGROUP reads messages assigned to this consumer
-  // '>' means only new messages (not already delivered to others)
-  const result = await redis.xreadgroup(
-    'GROUP', consumerGroup,
-    consumerId,
-    'COUNT', count,
-    'BLOCK', blockMs,
-    'STREAMS', STREAM_NAME,
-    '>'  // Only new messages
-  ) as [string, [string, string[]][]][] | null;
+  try {
+    // XREADGROUP reads messages assigned to this consumer
+    // '>' means only new messages (not already delivered to others)
+    const result = await redis.xreadgroup(
+      'GROUP', consumerGroup,
+      consumerId,
+      'COUNT', count,
+      'BLOCK', blockMs,
+      'STREAMS', STREAM_NAME,
+      '>'  // Only new messages
+    ) as [string, [string, string[]][]][] | null;
 
-  if (!result || result.length === 0) {
-    return [];
-  }
-
-  const messages: StreamMessage[] = [];
-  
-  // Parse the Redis response format
-  // result = [[streamName, [[messageId, [field, value, ...]], ...]]]
-  for (const [, streamMessages] of result) {
-    for (const [messageId, fields] of streamMessages) {
-      const fieldMap: Record<string, string> = {};
-      for (let i = 0; i < fields.length; i += 2) {
-        const key = fields[i];
-        const value = fields[i + 1];
-        if (key !== undefined && value !== undefined) {
-          fieldMap[key] = value;
-        }
+    if (!result || result.length === 0) {
+      // Log periodically when no messages (every 100 calls to avoid spam)
+      if (Math.random() < 0.01) {
+        logger.debug({ consumerId, consumerGroup, streamName: STREAM_NAME }, 'No new messages from stream');
       }
-      messages.push({ messageId, fields: fieldMap });
+      return [];
     }
-  }
 
-  return messages;
+    const messageCount = result[0]?.[1]?.length ?? 0;
+    logger.debug({ 
+      messageCount,
+      consumerId,
+      consumerGroup 
+    }, 'Messages read from stream');
+
+    const messages: StreamMessage[] = [];
+    
+    // Parse the Redis response format
+    // result = [[streamName, [[messageId, [field, value, ...]], ...]]]
+    for (const [, streamMessages] of result) {
+      for (const [messageId, fields] of streamMessages) {
+        const fieldMap: Record<string, string> = {};
+        for (let i = 0; i < fields.length; i += 2) {
+          const key = fields[i];
+          const value = fields[i + 1];
+          if (key !== undefined && value !== undefined) {
+            fieldMap[key] = value;
+          }
+        }
+        messages.push({ messageId, fields: fieldMap });
+      }
+    }
+
+    return messages;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error({ 
+      error: errorMessage,
+      consumerId,
+      consumerGroup,
+      streamName: STREAM_NAME 
+    }, 'Error reading from stream');
+    throw error;
+  }
 }
 
 /**

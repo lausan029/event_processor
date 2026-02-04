@@ -89,12 +89,12 @@ export function loadConfig(): Config {
       database: getEnvOrDefault('MONGO_DATABASE', 'event_processor'),
     },
     postgres: {
-      url: isProduction 
-        ? getRequiredEnv('DATABASE_URL')
-        : getEnvOrDefault(
-            'DATABASE_URL',
-            'postgresql://postgres:postgres@postgres:5432/event_processor?schema=public'
-          ),
+      // DATABASE_URL is only required for backend API, not for workers
+      // Workers only need MongoDB and Redis
+      url: getEnvOrDefault(
+        'DATABASE_URL',
+        'postgresql://postgres:postgres@postgres:5432/event_processor?schema=public'
+      ),
     },
     redis: {
       url: process.env['REDIS_URL'],
@@ -103,9 +103,9 @@ export function loadConfig(): Config {
       password: process.env['REDIS_PASSWORD'],
     },
     auth: {
-      jwtSecret: isProduction 
-        ? getRequiredEnv('JWT_SECRET')
-        : getEnvOrDefault('JWT_SECRET', 'dev-secret-change-in-production'),
+      // JWT_SECRET is only required for backend API (for user authentication)
+      // Workers don't need JWT, so use a default value if not provided
+      jwtSecret: getEnvOrDefault('JWT_SECRET', 'dev-secret-change-in-production-worker-does-not-need-jwt'),
       jwtExpiresIn: getEnvOrDefault('JWT_EXPIRES_IN', '24h'),
       apiKeyPrefix: getEnvOrDefault('API_KEY_PREFIX', 'evp_'),
     },
