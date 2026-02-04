@@ -9,13 +9,84 @@ import { createLogger } from '../../logging/logger.js';
 
 const logger = createLogger('analytics-routes');
 
+// Response schemas
+const analyticsResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    data: {
+      type: 'object',
+      properties: {
+        totalEvents: { type: 'integer', description: 'Total number of events in time range' },
+        timeRange: {
+          type: 'object',
+          properties: {
+            start: { type: 'string', format: 'date-time' },
+            end: { type: 'string', format: 'date-time' },
+          },
+        },
+        eventsByType: {
+          type: 'array',
+          description: 'Events breakdown by type',
+          items: {
+            type: 'object',
+            properties: {
+              eventType: { type: 'string' },
+              count: { type: 'integer' },
+              percentage: { type: 'number' },
+            },
+          },
+        },
+        topUsers: {
+          type: 'array',
+          description: 'Top users by event count',
+          items: {
+            type: 'object',
+            properties: {
+              userId: { type: 'string' },
+              eventCount: { type: 'integer' },
+              lastEventAt: { type: 'string', format: 'date-time' },
+              eventTypes: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+        eventsOverTime: {
+          type: 'array',
+          description: 'Events aggregated over time intervals',
+          items: {
+            type: 'object',
+            properties: {
+              timestamp: { type: 'string', format: 'date-time' },
+              count: { type: 'integer' },
+            },
+          },
+        },
+        avgEventsPerUser: { type: 'number', description: 'Average events per user' },
+        uniqueUsers: { type: 'integer', description: 'Number of unique users' },
+        uniqueSessions: { type: 'integer', description: 'Number of unique sessions' },
+      },
+    },
+  },
+} as const;
+
+const errorResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    error: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        message: { type: 'string' },
+      },
+    },
+  },
+} as const;
+
 export const analyticsRoutes: FastifyPluginAsync = async (
   fastify: FastifyInstance
 ): Promise<void> => {
-  /**
-   * GET /api/v1/analytics/metrics
-   * Get comprehensive analytics metrics with filters
-   */
+  // GET /analytics/metrics
   fastify.get<{
     Querystring: {
       timeRange?: string;
@@ -24,6 +95,9 @@ export const analyticsRoutes: FastifyPluginAsync = async (
     };
   }>('/analytics/metrics', {
     schema: {
+      tags: ['Analytics'],
+      summary: 'Get analytics metrics',
+      description: 'Returns comprehensive analytics including event counts, top users, events by type, and time series data. Results are cached for 10 seconds.',
       querystring: {
         type: 'object',
         properties: {
@@ -31,70 +105,21 @@ export const analyticsRoutes: FastifyPluginAsync = async (
             type: 'string',
             enum: ['15m', '1h', '24h', '7d'],
             default: '1h',
+            description: 'Time range for analytics',
           },
-          eventType: { type: 'string' },
-          userId: { type: 'string' },
+          eventType: { 
+            type: 'string',
+            description: 'Filter by event type',
+          },
+          userId: { 
+            type: 'string',
+            description: 'Filter by user ID (supports partial match)',
+          },
         },
       },
       response: {
-        200: {
-          type: 'object',
-          properties: {
-            success: { type: 'boolean' },
-            data: {
-              type: 'object',
-              properties: {
-                totalEvents: { type: 'number' },
-                timeRange: {
-                  type: 'object',
-                  properties: {
-                    start: { type: 'string' },
-                    end: { type: 'string' },
-                  },
-                },
-                eventsByType: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      eventType: { type: 'string' },
-                      count: { type: 'number' },
-                      percentage: { type: 'number' },
-                    },
-                  },
-                },
-                topUsers: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      userId: { type: 'string' },
-                      eventCount: { type: 'number' },
-                      lastEventAt: { type: 'string' },
-                      eventTypes: {
-                        type: 'array',
-                        items: { type: 'string' },
-                      },
-                    },
-                  },
-                },
-                eventsOverTime: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      timestamp: { type: 'string' },
-                      count: { type: 'number' },
-                    },
-                  },
-                },
-                avgEventsPerUser: { type: 'number' },
-                uniqueUsers: { type: 'number' },
-                uniqueSessions: { type: 'number' },
-              },
-            },
-          },
-        },
+        200: analyticsResponseSchema,
+        500: errorResponseSchema,
       },
     },
   }, async (request, reply) => {

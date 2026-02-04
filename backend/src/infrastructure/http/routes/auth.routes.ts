@@ -1,8 +1,5 @@
 /**
  * Authentication Routes
- * POST /auth/request-code - Request verification code
- * POST /auth/verify - Verify code and get JWT
- * POST /auth/api-key - Generate API key (protected)
  */
 
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
@@ -17,7 +14,7 @@ import { createLogger } from '../../logging/logger.js';
 
 const logger = createLogger('auth-routes');
 
-// Request validation schemas
+// Zod schemas for validation
 const RequestCodeSchema = z.object({
   email: z.string().email('Invalid email format'),
 });
@@ -31,15 +28,55 @@ const GenerateApiKeySchema = z.object({
   name: z.string().min(1).max(100).optional(),
 });
 
+// JSON Schemas for Swagger
+const errorResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    error: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        message: { type: 'string' },
+      },
+    },
+  },
+} as const;
+
 export const authRoutes: FastifyPluginAsync = async (
   fastify: FastifyInstance
 ): Promise<void> => {
   
-  /**
-   * POST /auth/request-code
-   * Request a verification code to be sent to the email
-   */
-  fastify.post('/request-code', async (request, reply) => {
+  // POST /auth/request-code
+  fastify.post('/request-code', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Request verification code',
+      description: 'Sends a 6-digit verification code to the provided email address. In development, the code is logged to the console.',
+      body: {
+        type: 'object',
+        required: ['email'],
+        properties: {
+          email: { type: 'string', format: 'email', description: 'User email address' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                message: { type: 'string' },
+              },
+            },
+          },
+        },
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request, reply) => {
     try {
       const body = RequestCodeSchema.parse(request.body);
       
@@ -68,11 +105,47 @@ export const authRoutes: FastifyPluginAsync = async (
     }
   });
 
-  /**
-   * POST /auth/verify
-   * Verify the code and get JWT token
-   */
-  fastify.post('/verify', async (request, reply) => {
+  // POST /auth/verify
+  fastify.post('/verify', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Verify code and get JWT',
+      description: 'Verifies the 6-digit code and returns a JWT token. Creates the user if not exists.',
+      body: {
+        type: 'object',
+        required: ['email', 'code'],
+        properties: {
+          email: { type: 'string', format: 'email' },
+          code: { type: 'string', pattern: '^\\d{6}$', description: '6-digit verification code' },
+        },
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                token: { type: 'string', description: 'JWT token for authentication' },
+                user: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    email: { type: 'string' },
+                    role: { type: 'string' },
+                  },
+                },
+                message: { type: 'string' },
+              },
+            },
+          },
+        },
+        401: errorResponseSchema,
+        400: errorResponseSchema,
+      },
+    },
+  }, async (request, reply) => {
     try {
       const body = VerifyCodeSchema.parse(request.body);
       
@@ -113,11 +186,44 @@ export const authRoutes: FastifyPluginAsync = async (
     }
   });
 
-  /**
-   * POST /auth/api-key
-   * Generate a new API key (requires authentication)
-   */
+  // POST /auth/api-key
   fastify.post('/api-key', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Generate API key',
+      description: 'Generates a new API key for event ingestion. Requires JWT authentication.',
+      headers: {
+        type: 'object',
+        properties: {
+          authorization: { type: 'string', description: 'Bearer JWT token' },
+        },
+        required: ['authorization'],
+      },
+      body: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', maxLength: 100, description: 'API key name' },
+        },
+      },
+      response: {
+        201: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                apiKey: { type: 'string', description: 'The generated API key (save it, shown only once)' },
+                keyId: { type: 'string', description: 'API key identifier' },
+                message: { type: 'string' },
+              },
+            },
+          },
+        },
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+      },
+    },
     preHandler: authenticateRequest,
   }, async (request, reply) => {
     try {
@@ -161,11 +267,37 @@ export const authRoutes: FastifyPluginAsync = async (
     }
   });
 
-  /**
-   * GET /auth/me
-   * Get current user info (requires authentication)
-   */
+  // GET /auth/me
   fastify.get('/me', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Get current user',
+      description: 'Returns the authenticated user information.',
+      headers: {
+        type: 'object',
+        properties: {
+          authorization: { type: 'string', description: 'Bearer JWT token' },
+        },
+        required: ['authorization'],
+      },
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            data: {
+              type: 'object',
+              properties: {
+                userId: { type: 'string' },
+                email: { type: 'string' },
+                role: { type: 'string' },
+              },
+            },
+          },
+        },
+        401: errorResponseSchema,
+      },
+    },
     preHandler: authenticateRequest,
   }, async (request, reply) => {
     const user = request.user!;

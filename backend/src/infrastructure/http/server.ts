@@ -7,6 +7,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import swagger from '@fastify/swagger';
+import swaggerUi from '@fastify/swagger-ui';
 import type { Config } from '../../config/index.js';
 import { createLogger } from '../logging/logger.js';
 import { createRedisClient } from '../database/redis.client.js';
@@ -126,6 +128,44 @@ export async function createServer(config: Config): Promise<FastifyInstance> {
   await connectRedisWithRetry(config);
   await connectPostgresWithRetry();
   await connectMongoWithRetry(config);
+
+  // Swagger/OpenAPI documentation
+  await server.register(swagger, {
+    openapi: {
+      info: {
+        title: 'Event Processing API',
+        description: 'High-scale event processing system (50k EPS)',
+        version: '1.0.0',
+      },
+      servers: [
+        { url: 'http://localhost:3001', description: 'Development' },
+      ],
+      components: {
+        securitySchemes: {
+          apiKey: {
+            type: 'apiKey',
+            name: 'x-api-key',
+            in: 'header',
+            description: 'API Key for event ingestion',
+          },
+        },
+      },
+      tags: [
+        { name: 'Events', description: 'Event ingestion endpoints' },
+        { name: 'Analytics', description: 'Analytics and metrics endpoints' },
+        { name: 'Auth', description: 'Authentication endpoints' },
+        { name: 'Health', description: 'Health check endpoints' },
+      ],
+    },
+  });
+
+  await server.register(swaggerUi, {
+    routePrefix: '/docs',
+    uiConfig: {
+      docExpansion: 'list',
+      deepLinking: true,
+    },
+  });
 
   // Security middleware
   await server.register(helmet, {

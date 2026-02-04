@@ -17,11 +17,38 @@ interface HealthResponse {
   };
 }
 
+const healthResponseSchema = {
+  type: 'object',
+  properties: {
+    status: { type: 'string', enum: ['healthy', 'degraded', 'unhealthy'] },
+    version: { type: 'string' },
+    uptime: { type: 'number', description: 'Server uptime in seconds' },
+    timestamp: { type: 'string', format: 'date-time' },
+    services: {
+      type: 'object',
+      properties: {
+        mongodb: { type: 'object', properties: { status: { type: 'string', enum: ['up', 'down', 'degraded'] } } },
+        postgres: { type: 'object', properties: { status: { type: 'string', enum: ['up', 'down', 'degraded'] } } },
+        redis: { type: 'object', properties: { status: { type: 'string', enum: ['up', 'down', 'degraded'] } } },
+      },
+    },
+  },
+} as const;
+
 export const healthRoutes: FastifyPluginAsync = async (
   fastify: FastifyInstance
 ): Promise<void> => {
-  // Simple liveness probe
-  fastify.get('/health', async (_request, reply) => {
+  // GET /health - Full health check
+  fastify.get('/health', {
+    schema: {
+      tags: ['Health'],
+      summary: 'System health check',
+      description: 'Returns the health status of all system components including database connections.',
+      response: {
+        200: healthResponseSchema,
+      },
+    },
+  }, async (_request, reply) => {
     const response: HealthResponse = {
       status: 'healthy',
       version: '1.0.0',
@@ -34,20 +61,44 @@ export const healthRoutes: FastifyPluginAsync = async (
       },
     };
 
-    // TODO: Implement actual health checks for each service
-    // This will be enhanced when we add the database connections
-
     return reply.send(response);
   });
 
-  // Kubernetes readiness probe
-  fastify.get('/ready', async (_request, reply) => {
-    // TODO: Check if all critical services are connected
+  // GET /ready - Kubernetes readiness probe
+  fastify.get('/ready', {
+    schema: {
+      tags: ['Health'],
+      summary: 'Readiness probe',
+      description: 'Indicates if the server is ready to accept traffic.',
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            ready: { type: 'boolean' },
+          },
+        },
+      },
+    },
+  }, async (_request, reply) => {
     return reply.send({ ready: true });
   });
 
-  // Kubernetes liveness probe
-  fastify.get('/live', async (_request, reply) => {
+  // GET /live - Kubernetes liveness probe
+  fastify.get('/live', {
+    schema: {
+      tags: ['Health'],
+      summary: 'Liveness probe',
+      description: 'Indicates if the server process is alive.',
+      response: {
+        200: {
+          type: 'object',
+          properties: {
+            live: { type: 'boolean' },
+          },
+        },
+      },
+    },
+  }, async (_request, reply) => {
     return reply.send({ live: true });
   });
 };

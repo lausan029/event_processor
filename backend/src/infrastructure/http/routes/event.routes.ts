@@ -2,13 +2,6 @@
  * Event Ingestion Routes
  * POST /api/v1/events - Ingest single event
  * POST /api/v1/events/batch - Ingest batch of events
- * 
- * Critical path optimized for 50k EPS:
- * - API Key auth with Redis cache
- * - AJV schema validation
- * - SETNX deduplication
- * - XADD to Redis Stream
- * - 202 Accepted response (no DB wait)
  */
 
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
@@ -27,34 +20,120 @@ import { createLogger } from '../../logging/logger.js';
 
 const logger = createLogger('event-routes');
 
+// JSON Schemas for Swagger documentation
+const eventSchema = {
+  type: 'object',
+  required: ['eventType', 'userId', 'sessionId', 'timestamp'],
+  properties: {
+    eventType: { type: 'string', description: 'Type of event' },
+    userId: { type: 'string', description: 'User identifier' },
+    sessionId: { type: 'string', description: 'Session identifier' },
+    timestamp: { type: 'string', format: 'date-time', description: 'Event timestamp' },
+    metadata: { type: 'object', description: 'Additional metadata', additionalProperties: true },
+    payload: { type: 'object', description: 'Event payload data', additionalProperties: true },
+    priority: { type: 'integer', minimum: 1, maximum: 10, default: 1, description: 'Event priority' },
+  },
+} as const;
+
+const eventResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    data: {
+      type: 'object',
+      properties: {
+        eventId: { type: 'string' },
+        accepted: { type: 'boolean' },
+        duplicate: { type: 'boolean' },
+        message: { type: 'string' },
+      },
+    },
+  },
+} as const;
+
+const batchRequestSchema = {
+  type: 'object',
+  required: ['events'],
+  properties: {
+    events: {
+      type: 'array',
+      items: eventSchema,
+      minItems: 1,
+      maxItems: 1000,
+      description: 'Array of events to ingest',
+    },
+  },
+} as const;
+
+const batchResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    data: {
+      type: 'object',
+      properties: {
+        accepted: { type: 'integer', description: 'Number of accepted events' },
+        duplicates: { type: 'integer', description: 'Number of duplicate events' },
+        total: { type: 'integer', description: 'Total events in batch' },
+        eventIds: { type: 'array', items: { type: 'string' } },
+        message: { type: 'string' },
+      },
+    },
+  },
+} as const;
+
+const statsResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    data: {
+      type: 'object',
+      properties: {
+        ingestionRate: { type: 'number', description: 'Events per second' },
+        totalIngested: { type: 'integer', description: 'Total events ingested' },
+        timestamp: { type: 'string', format: 'date-time' },
+      },
+    },
+  },
+} as const;
+
+const errorResponseSchema = {
+  type: 'object',
+  properties: {
+    success: { type: 'boolean' },
+    error: {
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+        message: { type: 'string' },
+      },
+    },
+  },
+} as const;
+
 export const eventRoutes: FastifyPluginAsync = async (
   fastify: FastifyInstance
 ): Promise<void> => {
   // Apply API Key authentication to all routes in this plugin
   fastify.addHook('preHandler', authenticateApiKey);
 
-  /**
-   * POST /events
-   * Ingest a single event
-   * 
-   * Headers:
-   *   x-api-key: evp_xxx... (required)
-   * 
-   * Body:
-   *   {
-   *     "eventType": "click",
-   *     "userId": "user-123",
-   *     "sessionId": "sess-456",
-   *     "timestamp": "2024-01-30T12:00:00Z",
-   *     "metadata": { ... },
-   *     "payload": { ... },
-   *     "priority": 1
-   *   }
-   * 
-   * Response: 202 Accepted (or 200 OK for duplicates)
-   */
-  fastify.post('/events', async (request, reply) => {
-    // Validate request body
+  // POST /events - Ingest single event
+  fastify.post('/events', {
+    schema: {
+      tags: ['Events'],
+      summary: 'Ingest a single event',
+      description: 'Accepts an event and queues it for processing. Returns 202 Accepted for new events, 200 OK for duplicates.',
+      security: [{ apiKey: [] }],
+      body: eventSchema,
+      response: {
+        202: eventResponseSchema,
+        200: eventResponseSchema,
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+        500: errorResponseSchema,
+      },
+    },
+  }, async (request, reply) => {
     const validation = validateEventPayload(request.body);
 
     if (!validation.valid) {
@@ -74,7 +153,6 @@ export const eventRoutes: FastifyPluginAsync = async (
       const result = await ingestEvent(event, sourceUserId);
 
       if (result.duplicate) {
-        // 200 OK for duplicates (idempotent - not an error)
         return reply.status(200).send({
           success: true,
           data: {
@@ -86,7 +164,6 @@ export const eventRoutes: FastifyPluginAsync = async (
         });
       }
 
-      // 202 Accepted for new events
       return reply.status(202).send({
         success: true,
         data: {
@@ -109,25 +186,22 @@ export const eventRoutes: FastifyPluginAsync = async (
     }
   });
 
-  /**
-   * POST /events/batch
-   * Ingest multiple events in a single request
-   * 
-   * Headers:
-   *   x-api-key: evp_xxx... (required)
-   * 
-   * Body:
-   *   {
-   *     "events": [
-   *       { "eventType": "click", ... },
-   *       { "eventType": "purchase", ... }
-   *     ]
-   *   }
-   * 
-   * Response: 202 Accepted
-   */
-  fastify.post('/events/batch', async (request, reply) => {
-    // Validate request body
+  // POST /events/batch - Ingest multiple events
+  fastify.post('/events/batch', {
+    schema: {
+      tags: ['Events'],
+      summary: 'Ingest a batch of events',
+      description: 'Accepts up to 1000 events in a single request. All events are queued for processing.',
+      security: [{ apiKey: [] }],
+      body: batchRequestSchema,
+      response: {
+        202: batchResponseSchema,
+        400: errorResponseSchema,
+        401: errorResponseSchema,
+        500: errorResponseSchema,
+      },
+    },
+  }, async (request, reply) => {
     const validation = validateBatchPayload(request.body);
 
     if (!validation.valid) {
@@ -146,7 +220,6 @@ export const eventRoutes: FastifyPluginAsync = async (
     try {
       const result = await ingestBatch(events, sourceUserId);
 
-      // Always 202 for batch (even if some are duplicates)
       return reply.status(202).send({
         success: true,
         data: {
@@ -170,11 +243,19 @@ export const eventRoutes: FastifyPluginAsync = async (
     }
   });
 
-  /**
-   * GET /events/stats
-   * Get ingestion statistics (for monitoring)
-   */
-  fastify.get('/events/stats', async (_request, reply) => {
+  // GET /events/stats - Ingestion statistics
+  fastify.get('/events/stats', {
+    schema: {
+      tags: ['Events'],
+      summary: 'Get ingestion statistics',
+      description: 'Returns real-time ingestion rate and total events processed.',
+      security: [{ apiKey: [] }],
+      response: {
+        200: statsResponseSchema,
+        500: errorResponseSchema,
+      },
+    },
+  }, async (_request, reply) => {
     try {
       const [ingestionRate, totalIngested] = await Promise.all([
         getIngestionRate(),
@@ -184,8 +265,8 @@ export const eventRoutes: FastifyPluginAsync = async (
       return reply.send({
         success: true,
         data: {
-          ingestionRate,      // Events per second
-          totalIngested,      // Total events ingested
+          ingestionRate,
+          totalIngested,
           timestamp: new Date().toISOString(),
         },
       });
