@@ -46,6 +46,3 @@ backend/prisma/migrations/*.sql
 *.pem
 *.key
 .cache/
-
-
-package-lock.json
