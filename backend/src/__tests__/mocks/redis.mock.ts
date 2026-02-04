@@ -84,7 +84,7 @@ export class MockRedisClient {
     return args.length / 2;
   }
 
-  async hget(key: string, _field: string): Promise<string | null> {
+  async hget(_key: string, _field: string): Promise<string | null> {
     return null;
   }
 
@@ -99,7 +99,11 @@ export class MockRedisClient {
     }
     const fields: Record<string, string> = {};
     for (let i = 0; i < fieldsAndValues.length; i += 2) {
-      fields[fieldsAndValues[i]] = fieldsAndValues[i + 1];
+      const fieldKey = fieldsAndValues[i];
+      const fieldValue = fieldsAndValues[i + 1];
+      if (fieldKey !== undefined && fieldValue !== undefined) {
+        fields[fieldKey] = fieldValue;
+      }
     }
     const messageId = id === '*' ? `${Date.now()}-0` : id;
     this.streams.get(stream)!.push({ id: messageId, fields });
@@ -187,9 +191,14 @@ export class MockRedisClient {
         const results: Array<[Error | null, unknown]> = [];
         for (const cmd of commands) {
           try {
-            const fn = (self as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[cmd.method];
-            const result = await fn.apply(self, cmd.args);
-            results.push([null, result]);
+            const methodName = cmd.method;
+            const fn = (self as unknown as Record<string, ((...args: unknown[]) => Promise<unknown>) | undefined>)[methodName];
+            if (fn) {
+              const execResult = await fn.apply(self, cmd.args);
+              results.push([null, execResult]);
+            } else {
+              results.push([new Error(`Method ${methodName} not found`), null]);
+            }
           } catch (error) {
             results.push([error as Error, null]);
           }

@@ -6,9 +6,9 @@
 import { vi, beforeAll, afterAll, afterEach } from 'vitest';
 
 // Set test environment
-process.env.NODE_ENV = 'test';
-process.env.JWT_SECRET = 'test-jwt-secret-key-for-testing';
-process.env.LOG_LEVEL = 'silent';
+process.env['NODE_ENV'] = 'test';
+process.env['JWT_SECRET'] = 'test-jwt-secret-key-for-testing';
+process.env['LOG_LEVEL'] = 'silent';
 
 // Mock timers for consistent testing
 beforeAll(() => {

@@ -6,7 +6,30 @@
 import { vi } from 'vitest';
 
 interface MockDocument {
-  _id?: string;
+  _id?: string | null;
+  [key: string]: unknown;
+}
+
+interface AggregateStage {
+  $match?: Record<string, unknown>;
+  $group?: Record<string, unknown>;
+  $sort?: Record<string, number>;
+  $limit?: number;
+  [key: string]: unknown;
+}
+
+interface QueryOperators {
+  $gte?: unknown;
+  $lte?: unknown;
+  $regex?: string;
+  $options?: string;
+  [key: string]: unknown;
+}
+
+interface GroupOperator {
+  $sum?: unknown;
+  $max?: string;
+  $addToSet?: string;
   [key: string]: unknown;
 }
 
@@ -14,7 +37,7 @@ export class MockCollection {
   private documents: MockDocument[] = [];
   
   async insertOne(doc: MockDocument) {
-    const _id = doc._id ?? `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const _id = doc['_id'] ?? `${Date.now()}_${Math.random().toString(36).substring(7)}`;
     const newDoc = { ...doc, _id };
     this.documents.push(newDoc);
     return { acknowledged: true, insertedId: _id };
@@ -22,10 +45,13 @@ export class MockCollection {
 
   async insertMany(docs: MockDocument[]) {
     const insertedIds: Record<number, string> = {};
-    docs.forEach((doc, index) => {
-      const result = this.insertOne(doc);
-      insertedIds[index] = doc._id ?? `inserted_${index}`;
-    });
+    for (let index = 0; index < docs.length; index++) {
+      const doc = docs[index];
+      if (doc) {
+        await this.insertOne(doc);
+        insertedIds[index] = (doc['_id'] as string) ?? `inserted_${index}`;
+      }
+    }
     return { acknowledged: true, insertedCount: docs.length, insertedIds };
   }
 
@@ -54,8 +80,9 @@ export class MockCollection {
 
   async updateOne(query: Record<string, unknown>, update: Record<string, unknown>) {
     const doc = this.documents.find(d => this.matchesQuery(d, query));
-    if (doc && update.$set) {
-      Object.assign(doc, update.$set);
+    const setOp = update['$set'] as Record<string, unknown> | undefined;
+    if (doc && setOp) {
+      Object.assign(doc, setOp);
       return { acknowledged: true, modifiedCount: 1, matchedCount: 1 };
     }
     return { acknowledged: true, modifiedCount: 0, matchedCount: 0 };
@@ -72,30 +99,42 @@ export class MockCollection {
     return { ok: 1, insertedCount, modifiedCount: 0, deletedCount: 0, upsertedCount: 0 };
   }
 
-  aggregate(pipeline: Array<Record<string, unknown>>) {
+  aggregate(pipeline: AggregateStage[]) {
     let results = [...this.documents];
     
     for (const stage of pipeline) {
-      if (stage.$match) {
-        results = results.filter(doc => this.matchesQuery(doc, stage.$match as Record<string, unknown>));
+      const matchStage = stage['$match'] as Record<string, unknown> | undefined;
+      if (matchStage) {
+        results = results.filter(doc => this.matchesQuery(doc, matchStage));
       }
-      if (stage.$group) {
-        results = this.groupDocuments(results, stage.$group as Record<string, unknown>);
+
+      const groupStage = stage['$group'] as Record<string, unknown> | undefined;
+      if (groupStage) {
+        results = this.groupDocuments(results, groupStage);
       }
-      if (stage.$sort) {
-        const sortFields = stage.$sort as Record<string, number>;
+
+      const sortStage = stage['$sort'] as Record<string, number> | undefined;
+      if (sortStage) {
         results.sort((a, b) => {
-          for (const [field, order] of Object.entries(sortFields)) {
+          for (const [field, order] of Object.entries(sortStage)) {
             const aVal = a[field];
             const bVal = b[field];
-            if (aVal < bVal) return -order;
-            if (aVal > bVal) return order;
+            // Type guard for comparison
+            if (typeof aVal === 'number' && typeof bVal === 'number') {
+              if (aVal < bVal) return -order;
+              if (aVal > bVal) return order;
+            } else if (typeof aVal === 'string' && typeof bVal === 'string') {
+              if (aVal < bVal) return -order;
+              if (aVal > bVal) return order;
+            }
           }
           return 0;
         });
       }
-      if (stage.$limit) {
-        results = results.slice(0, stage.$limit as number);
+
+      const limitStage = stage['$limit'] as number | undefined;
+      if (limitStage !== undefined) {
+        results = results.slice(0, limitStage);
       }
     }
     
@@ -119,11 +158,20 @@ export class MockCollection {
       const docValue = doc[key];
       
       if (typeof value === 'object' && value !== null) {
-        const ops = value as Record<string, unknown>;
-        if ('$gte' in ops && docValue < ops.$gte) return false;
-        if ('$lte' in ops && docValue > ops.$lte) return false;
-        if ('$regex' in ops) {
-          const regex = new RegExp(ops.$regex as string, ops.$options as string ?? '');
+        const ops = value as QueryOperators;
+        const gteVal = ops['$gte'];
+        const lteVal = ops['$lte'];
+        const regexVal = ops['$regex'];
+        const optionsVal = ops['$options'];
+        
+        if (gteVal !== undefined && typeof docValue === 'number' && typeof gteVal === 'number') {
+          if (docValue < gteVal) return false;
+        }
+        if (lteVal !== undefined && typeof docValue === 'number' && typeof lteVal === 'number') {
+          if (docValue > lteVal) return false;
+        }
+        if (regexVal !== undefined) {
+          const regex = new RegExp(regexVal, typeof optionsVal === 'string' ? optionsVal : '');
           if (!regex.test(String(docValue))) return false;
         }
         continue;
@@ -136,10 +184,13 @@ export class MockCollection {
 
   private groupDocuments(docs: MockDocument[], groupStage: Record<string, unknown>): MockDocument[] {
     const groups = new Map<string, MockDocument[]>();
-    const idField = groupStage._id as string;
+    const idField = groupStage['_id'] as string | null;
     
     for (const doc of docs) {
-      const groupKey = idField?.startsWith('$') ? String(doc[idField.substring(1)]) : 'all';
+      let groupKey = 'all';
+      if (typeof idField === 'string' && idField.startsWith('$')) {
+        groupKey = String(doc[idField.substring(1)]);
+      }
       if (!groups.has(groupKey)) {
         groups.set(groupKey, []);
       }
@@ -154,16 +205,18 @@ export class MockCollection {
         if (field === '_id') continue;
         
         if (typeof expr === 'object' && expr !== null) {
-          const op = expr as Record<string, unknown>;
+          const op = expr as GroupOperator;
           if ('$sum' in op) {
             result[field] = groupDocs.length;
           }
-          if ('$max' in op) {
-            const srcField = (op.$max as string).substring(1);
+          const maxField = op['$max'];
+          if (typeof maxField === 'string') {
+            const srcField = maxField.substring(1);
             result[field] = Math.max(...groupDocs.map(d => d[srcField] as number));
           }
-          if ('$addToSet' in op) {
-            const srcField = (op.$addToSet as string).substring(1);
+          const addToSetField = op['$addToSet'];
+          if (typeof addToSetField === 'string') {
+            const srcField = addToSetField.substring(1);
             result[field] = [...new Set(groupDocs.map(d => d[srcField]))];
           }
         }
