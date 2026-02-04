@@ -188,18 +188,15 @@ async function flushBuffer(state: WorkerState): Promise<void> {
     if (result.success) {
       // Acknowledge messages in Redis - wait for completion (use correct consumer group)
       await acknowledgeMessages(messageIds, state.consumerGroup);
-      console.log(`[WORKER] ✅ Acknowledged ${messageIds.length} messages`);
 
       // Update metrics
       await updateBatchMetrics(events.length, eventTypes, processingTime);
-      console.log(`[WORKER] 📊 Updated metrics: ${events.length} events processed`);
 
       state.processedCount += events.length;
       
       // Log memory periodically
       logMemoryUsage(state);
 
-      console.log(`[WORKER] ✅ Batch processed: ${events.length} events, Total: ${state.processedCount}`);
       logger.info({
         batchSize: events.length,
         processingTimeMs: processingTime,
@@ -316,7 +313,6 @@ async function workerLoop(state: WorkerState): Promise<void> {
       );
 
       if (messages.length > 0) {
-        console.log(`[WORKER] Read ${messages.length} messages from stream. Processing...`);
         logger.debug({ 
           messageCount: messages.length,
           consumerId: state.consumerId 
@@ -418,7 +414,6 @@ export async function startWorker(): Promise<{
   
   const consumerId = config.worker.consumerId;
 
-  console.log(`[WORKER] Starting event worker - Consumer ID: ${consumerId}, Group: ${consumerGroup}`);
   logger.info({ 
     consumerId, 
     consumerGroup,
@@ -427,44 +422,7 @@ export async function startWorker(): Promise<{
   }, 'Starting event worker');
 
   // Initialize consumer group with the correct name
-  console.log(`[WORKER] Initializing consumer group: ${consumerGroup} on stream: events_stream`);
-  try {
-    await initializeConsumerGroup(consumerGroup);
-    console.log(`[WORKER] Consumer group initialized successfully`);
-  } catch (error) {
-    console.error(`[WORKER] ERROR initializing consumer group:`, error);
-    throw error;
-  }
-  
-  // Verify stream exists and has messages
-  const { getRedisClient } = await import('../../infrastructure/database/redis.client.js');
-  const { STREAM_NAME, getStreamInfo } = await import('../../infrastructure/streams/redis-stream.client.js');
-  const redis = getRedisClient();
-  
-  try {
-    const streamLength = await redis.xlen(STREAM_NAME);
-    console.log(`[WORKER] Stream '${STREAM_NAME}' length: ${streamLength} messages`);
-    
-    const streamInfo = await getStreamInfo();
-    console.log(`[WORKER] Stream info - Length: ${streamInfo.length}, Groups: ${streamInfo.groups}, Pending: ${streamInfo.pendingMessages}`);
-    
-    // Check pending messages for this consumer group
-    try {
-      const pendingInfo = await redis.xpending(STREAM_NAME, consumerGroup, '-', '+', 10);
-      console.log(`[WORKER] Pending messages in group:`, pendingInfo);
-    } catch (pendingError) {
-      console.log(`[WORKER] No pending messages or error checking:`, pendingError instanceof Error ? pendingError.message : String(pendingError));
-    }
-    
-    logger.info({ 
-      streamLength, 
-      streamInfo,
-      streamName: STREAM_NAME 
-    }, 'Stream status checked');
-  } catch (error) {
-    console.error(`[WORKER] ERROR checking stream status:`, error);
-    logger.error({ error }, 'Failed to check stream status');
-  }
+  await initializeConsumerGroup(consumerGroup);
 
   const state: WorkerState = {
     consumerId,

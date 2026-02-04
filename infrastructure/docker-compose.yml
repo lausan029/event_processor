@@ -202,8 +202,6 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/event_processor?schema=public
       # JWT_SECRET is not required for workers, but set a default to avoid errors
       JWT_SECRET: dev-secret-worker-does-not-need-jwt
-    # FORCE KEEP ALIVE FOR DEBUGGING - Remove this command to run normally
-    command: sh -c "tail -f /dev/null"
     depends_on:
       mongo-init:
         condition: service_completed_successfully
