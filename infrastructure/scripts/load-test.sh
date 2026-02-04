@@ -5,7 +5,7 @@
 ENDPOINT="${ENDPOINT:-http://localhost:3001/api/v1/events}"
 API_KEY="evp_pWHftO6W3D6jJxpOMCQ1pOfkKGzDG5tv2QDbTOtXWoc"
 TOTAL_REQUESTS=5000
-CONCURRENCY=1000
+CONCURRENCY=100
 
 # Event types
 EVENT_TYPES=("page_view" "button_click" "form_submit" "purchase" "signup" "login" "logout" "search" "video_play" "file_download")

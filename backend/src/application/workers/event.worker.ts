@@ -10,15 +10,16 @@
  * - Real-time metrics updates
  */
 
-import os from 'os';
 import { createLogger } from '../../infrastructure/logging/logger.js';
 import {
   readFromStream,
   acknowledgeMessages,
   claimStaleMessages,
   initializeConsumerGroup,
+  setConsumerGroup,
   type StreamMessage,
 } from '../../infrastructure/streams/redis-stream.client.js';
+import { loadConfig } from '../../config/index.js';
 import {
   bulkWriteEvents,
   writeToDeadLetterQueue,
@@ -35,8 +36,6 @@ import { withRetry, DEFAULT_RETRY_CONFIG } from './retry.utils.js';
 const logger = createLogger('event-worker');
 
 // Worker Configuration
-const BATCH_SIZE = 100;
-const BATCH_TIMEOUT_MS = 500;
 const READ_BLOCK_MS = 100;
 const READ_COUNT = 50;
 const CLAIM_INTERVAL_MS = 30000;
@@ -45,6 +44,9 @@ const MEMORY_LOG_INTERVAL = 500;
 
 interface WorkerState {
   consumerId: string;
+  consumerGroup: string;
+  batchSize: number;
+  batchTimeoutMs: number;
   isRunning: boolean;
   eventBuffer: BufferedEvent[];
   lastFlushTime: number;
@@ -60,15 +62,6 @@ interface BufferedEvent {
   rawMessage: StreamMessage;
 }
 
-/**
- * Generate unique consumer ID using hostname + process ID
- */
-function generateConsumerId(): string {
-  const hostname = os.hostname();
-  const pid = process.pid;
-  const random = Math.random().toString(36).substring(2, 8);
-  return `worker-${hostname}-${pid}-${random}`;
-}
 
 /**
  * Parse stream message into StoredEvent
@@ -178,7 +171,8 @@ async function flushBuffer(state: WorkerState): Promise<void> {
 
   logger.info({
     batchSize: events.length,
-    consumerId: state.consumerId
+    consumerId: state.consumerId,
+    consumerGroup: state.consumerGroup
   }, 'Processing batch');
 
   try {
@@ -192,8 +186,8 @@ async function flushBuffer(state: WorkerState): Promise<void> {
     const processingTime = Date.now() - startTime;
 
     if (result.success) {
-      // Acknowledge messages in Redis - wait for completion
-      await acknowledgeMessages(messageIds);
+      // Acknowledge messages in Redis - wait for completion (use correct consumer group)
+      await acknowledgeMessages(messageIds, state.consumerGroup);
 
       // Update metrics
       await updateBatchMetrics(events.length, eventTypes, processingTime);
@@ -238,8 +232,8 @@ async function flushBuffer(state: WorkerState): Promise<void> {
         await writeToDeadLetterQueue(dlqEvents);
         await recordDLQEvents(dlqEvents.length);
         
-        // Still acknowledge to prevent reprocessing
-        await acknowledgeMessages(messageIds);
+        // Still acknowledge to prevent reprocessing (use correct consumer group)
+        await acknowledgeMessages(messageIds, state.consumerGroup);
       } catch (dlqError) {
         logger.fatal({
           error: dlqError,
@@ -277,8 +271,8 @@ async function processMessages(
         rawMessage: message,
       });
     } else {
-      // Invalid message - acknowledge to remove from stream
-      await acknowledgeMessages([message.messageId]);
+      // Invalid message - acknowledge to remove from stream (use correct consumer group)
+      await acknowledgeMessages([message.messageId], state.consumerGroup);
     }
     
     // Clear reference to message after processing
@@ -288,8 +282,8 @@ async function processMessages(
   // Check if we should flush - ALWAYS flush when batch is full
   // This implements backpressure by blocking until write completes
   const shouldFlush = 
-    state.eventBuffer.length >= BATCH_SIZE ||
-    (state.eventBuffer.length > 0 && Date.now() - state.lastFlushTime >= BATCH_TIMEOUT_MS);
+    state.eventBuffer.length >= state.batchSize ||
+    (state.eventBuffer.length > 0 && Date.now() - state.lastFlushTime >= state.batchTimeoutMs);
 
   if (shouldFlush) {
     await flushBuffer(state);  // Blocks until MongoDB write completes
@@ -310,11 +304,12 @@ async function workerLoop(state: WorkerState): Promise<void> {
         continue;
       }
 
-      // Read new messages - limited count for memory control
+      // Read new messages - limited count for memory control (use correct consumer group)
       const messages = await readFromStream(
         state.consumerId,
         READ_COUNT,
-        READ_BLOCK_MS
+        READ_BLOCK_MS,
+        state.consumerGroup
       );
 
       if (messages.length > 0) {
@@ -327,7 +322,7 @@ async function workerLoop(state: WorkerState): Promise<void> {
         // No new messages - check if we need to flush due to timeout
         if (
           state.eventBuffer.length > 0 &&
-          Date.now() - state.lastFlushTime >= BATCH_TIMEOUT_MS
+          Date.now() - state.lastFlushTime >= state.batchTimeoutMs
         ) {
           await flushBuffer(state);
         }
@@ -340,7 +335,9 @@ async function workerLoop(state: WorkerState): Promise<void> {
       if (Date.now() - lastClaimTime >= CLAIM_INTERVAL_MS) {
         const staleMessages = await claimStaleMessages(
           state.consumerId,
-          STALE_MESSAGE_AGE_MS
+          STALE_MESSAGE_AGE_MS,
+          100,
+          state.consumerGroup
         );
 
         if (staleMessages.length > 0) {
@@ -403,15 +400,30 @@ export async function startWorker(): Promise<{
   stop: () => Promise<void>;
   getStats: () => { processedCount: number; errorCount: number };
 }> {
-  const consumerId = generateConsumerId();
+  // Load config to get consumer group name
+  const config = loadConfig();
+  const consumerGroup = config.worker.consumerGroup;
+  
+  // Set the consumer group for all stream operations
+  setConsumerGroup(consumerGroup);
+  
+  const consumerId = config.worker.consumerId;
 
-  logger.info({ consumerId }, 'Starting event worker');
+  logger.info({ 
+    consumerId, 
+    consumerGroup,
+    batchSize: config.worker.batchSize,
+    batchTimeoutMs: config.worker.batchTimeoutMs,
+  }, 'Starting event worker');
 
-  // Initialize consumer group
-  await initializeConsumerGroup();
+  // Initialize consumer group with the correct name
+  await initializeConsumerGroup(consumerGroup);
 
   const state: WorkerState = {
     consumerId,
+    consumerGroup,
+    batchSize: config.worker.batchSize,
+    batchTimeoutMs: config.worker.batchTimeoutMs,
     isRunning: true,
     eventBuffer: [],
     lastFlushTime: Date.now(),
@@ -423,9 +435,10 @@ export async function startWorker(): Promise<{
 
   logger.info({
     consumerId,
-    batchSize: BATCH_SIZE,
+    consumerGroup,
+    batchSize: state.batchSize,
     readCount: READ_COUNT,
-    batchTimeoutMs: BATCH_TIMEOUT_MS,
+    batchTimeoutMs: state.batchTimeoutMs,
   }, 'Worker initialized');
 
   // Start the worker loop

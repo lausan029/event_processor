@@ -10,8 +10,24 @@ const logger = createLogger('redis-streams');
 
 // Stream configuration
 export const STREAM_NAME = 'events_stream';
-export const CONSUMER_GROUP = 'event_processors';
 export const METRICS_KEY = 'metrics:realtime';
+
+// Default consumer group (can be overridden via config)
+let defaultConsumerGroup = 'evp-workers-group';
+
+/**
+ * Set the default consumer group (called from worker initialization)
+ */
+export function setConsumerGroup(groupName: string): void {
+  defaultConsumerGroup = groupName;
+}
+
+/**
+ * Get the current consumer group
+ */
+export function getConsumerGroup(): string {
+  return defaultConsumerGroup;
+}
 
 export interface StreamEvent {
   id: string;  // Redis stream message ID
@@ -33,18 +49,19 @@ export interface StreamMessage {
  * Initialize the consumer group for the stream
  * Creates the stream and group if they don't exist
  */
-export async function initializeConsumerGroup(): Promise<void> {
+export async function initializeConsumerGroup(groupName?: string): Promise<void> {
   const redis = getRedisClient();
+  const consumerGroup = groupName ?? defaultConsumerGroup;
 
   try {
     // Try to create the consumer group
     // MKSTREAM creates the stream if it doesn't exist
-    await redis.xgroup('CREATE', STREAM_NAME, CONSUMER_GROUP, '0', 'MKSTREAM');
-    logger.info({ stream: STREAM_NAME, group: CONSUMER_GROUP }, 'Consumer group created');
+    await redis.xgroup('CREATE', STREAM_NAME, consumerGroup, '0', 'MKSTREAM');
+    logger.info({ stream: STREAM_NAME, group: consumerGroup }, 'Consumer group created');
   } catch (error) {
     // Check if group already exists (this is expected in most cases)
     if (error instanceof Error && error.message.includes('BUSYGROUP')) {
-      logger.info({ stream: STREAM_NAME, group: CONSUMER_GROUP }, 'Consumer group already exists');
+      logger.info({ stream: STREAM_NAME, group: consumerGroup }, 'Consumer group already exists');
     } else {
       throw error;
     }
@@ -58,14 +75,16 @@ export async function initializeConsumerGroup(): Promise<void> {
 export async function readFromStream(
   consumerId: string,
   count: number = 100,
-  blockMs: number = 1000
+  blockMs: number = 1000,
+  groupName?: string
 ): Promise<StreamMessage[]> {
   const redis = getRedisClient();
+  const consumerGroup = groupName ?? defaultConsumerGroup;
 
   // XREADGROUP reads messages assigned to this consumer
   // '>' means only new messages (not already delivered to others)
   const result = await redis.xreadgroup(
-    'GROUP', CONSUMER_GROUP,
+    'GROUP', consumerGroup,
     consumerId,
     'COUNT', count,
     'BLOCK', blockMs,
@@ -102,11 +121,12 @@ export async function readFromStream(
  * Acknowledge processed messages
  * This removes them from the pending entries list
  */
-export async function acknowledgeMessages(messageIds: string[]): Promise<number> {
+export async function acknowledgeMessages(messageIds: string[], groupName?: string): Promise<number> {
   if (messageIds.length === 0) return 0;
 
   const redis = getRedisClient();
-  const result = await redis.xack(STREAM_NAME, CONSUMER_GROUP, ...messageIds);
+  const consumerGroup = groupName ?? defaultConsumerGroup;
+  const result = await redis.xack(STREAM_NAME, consumerGroup, ...messageIds);
   
   return result;
 }
@@ -177,15 +197,17 @@ export async function getStreamInfo(): Promise<{
 export async function claimStaleMessages(
   consumerId: string,
   minIdleTimeMs: number = 60000,
-  count: number = 100
+  count: number = 100,
+  groupName?: string
 ): Promise<StreamMessage[]> {
   const redis = getRedisClient();
+  const consumerGroup = groupName ?? defaultConsumerGroup;
 
   try {
     // Use XAUTOCLAIM for automatic claiming of idle messages
     const result = await redis.xautoclaim(
       STREAM_NAME,
-      CONSUMER_GROUP,
+      consumerGroup,
       consumerId,
       minIdleTimeMs,
       '0-0',  // Start from beginning of pending list
