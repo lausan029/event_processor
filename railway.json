@@ -1,0 +1,63 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE"
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "sleepApplication": false,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  },
+  "services": {
+    "backend": {
+      "name": "Event Processor API",
+      "dockerfile": "infrastructure/Dockerfile.backend",
+      "startCommand": "node dist/index.js",
+      "healthcheckPath": "/api/health",
+      "healthcheckTimeout": 30,
+      "healthcheckInterval": 15,
+      "deploy": {
+        "numReplicas": 1,
+        "sleepApplication": false
+      },
+      "envVars": {
+        "NODE_ENV": "production",
+        "PORT": "3001",
+        "SERVER_HOST": "0.0.0.0",
+        "LOG_LEVEL": "info",
+        "LOG_FORMAT": "json"
+      }
+    },
+    "worker": {
+      "name": "Event Worker",
+      "dockerfile": "infrastructure/Dockerfile.worker",
+      "startCommand": "node dist/worker.js",
+      "deploy": {
+        "numReplicas": 3,
+        "sleepApplication": false
+      },
+      "envVars": {
+        "NODE_ENV": "production",
+        "LOG_LEVEL": "info",
+        "LOG_FORMAT": "json",
+        "CONSUMER_NAME": "${{ RAILWAY_REPLICA_ID }}",
+        "WORKER_ID": "${{ RAILWAY_REPLICA_ID }}"
+      }
+    },
+    "frontend": {
+      "name": "Event Processor Dashboard",
+      "dockerfile": "infrastructure/Dockerfile.frontend",
+      "healthcheckPath": "/nginx-health",
+      "healthcheckTimeout": 10,
+      "healthcheckInterval": 30,
+      "deploy": {
+        "numReplicas": 1,
+        "sleepApplication": false
+      },
+      "envVars": {
+        "NODE_ENV": "production"
+      }
+    }
+  }
+}

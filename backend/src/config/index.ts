@@ -1,6 +1,7 @@
 /**
  * Application Configuration
  * Loaded from environment variables with sensible defaults for development
+ * All sensitive values MUST be provided via environment variables in production
  */
 
 export interface ServerConfig {
@@ -18,9 +19,23 @@ export interface PostgresConfig {
 }
 
 export interface RedisConfig {
+  readonly url: string | undefined;
   readonly host: string;
   readonly port: number;
   readonly password: string | undefined;
+}
+
+export interface AuthConfig {
+  readonly jwtSecret: string;
+  readonly jwtExpiresIn: string;
+  readonly apiKeyPrefix: string;
+}
+
+export interface WorkerConfig {
+  readonly consumerId: string;
+  readonly consumerGroup: string;
+  readonly batchSize: number;
+  readonly batchTimeoutMs: number;
 }
 
 export interface Config {
@@ -29,6 +44,8 @@ export interface Config {
   readonly mongo: MongoConfig;
   readonly postgres: PostgresConfig;
   readonly redis: RedisConfig;
+  readonly auth: AuthConfig;
+  readonly worker: WorkerConfig;
 }
 
 function getEnvOrDefault(key: string, defaultValue: string): string {
@@ -44,27 +61,59 @@ function getEnvAsIntOrDefault(key: string, defaultValue: number): number {
   return isNaN(parsed) ? defaultValue : parsed;
 }
 
+function getRequiredEnv(key: string): string {
+  const value = process.env[key];
+  if (!value && process.env['NODE_ENV'] === 'production') {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+  return value ?? '';
+}
+
 export function loadConfig(): Config {
+  const env = getEnvOrDefault('NODE_ENV', 'development');
+  const isProduction = env === 'production';
+  
+  // Generate dynamic consumer ID for workers
+  const hostname = process.env['HOSTNAME'] ?? process.env['RAILWAY_REPLICA_ID'] ?? `local-${Date.now()}`;
+  
   return {
-    env: getEnvOrDefault('NODE_ENV', 'development'),
+    env,
     server: {
       host: getEnvOrDefault('SERVER_HOST', '0.0.0.0'),
-      port: getEnvAsIntOrDefault('SERVER_PORT', 3001),
+      port: getEnvAsIntOrDefault('PORT', getEnvAsIntOrDefault('SERVER_PORT', 3001)),
     },
     mongo: {
-      uri: getEnvOrDefault('MONGO_URI', 'mongodb://mongos:27017'),
+      uri: isProduction 
+        ? getRequiredEnv('MONGO_URI') 
+        : getEnvOrDefault('MONGO_URI', 'mongodb://mongos:27017'),
       database: getEnvOrDefault('MONGO_DATABASE', 'event_processor'),
     },
     postgres: {
-      url: getEnvOrDefault(
-        'DATABASE_URL',
-        'postgresql://postgres:postgres@postgres:5432/event_processor?schema=public'
-      ),
+      url: isProduction 
+        ? getRequiredEnv('DATABASE_URL')
+        : getEnvOrDefault(
+            'DATABASE_URL',
+            'postgresql://postgres:postgres@postgres:5432/event_processor?schema=public'
+          ),
     },
     redis: {
+      url: process.env['REDIS_URL'],
       host: getEnvOrDefault('REDIS_HOST', 'redis'),
       port: getEnvAsIntOrDefault('REDIS_PORT', 6379),
       password: process.env['REDIS_PASSWORD'],
+    },
+    auth: {
+      jwtSecret: isProduction 
+        ? getRequiredEnv('JWT_SECRET')
+        : getEnvOrDefault('JWT_SECRET', 'dev-secret-change-in-production'),
+      jwtExpiresIn: getEnvOrDefault('JWT_EXPIRES_IN', '24h'),
+      apiKeyPrefix: getEnvOrDefault('API_KEY_PREFIX', 'evp_'),
+    },
+    worker: {
+      consumerId: getEnvOrDefault('CONSUMER_NAME', `worker-${hostname}`),
+      consumerGroup: getEnvOrDefault('CONSUMER_GROUP', 'evp-workers-group'),
+      batchSize: getEnvAsIntOrDefault('WORKER_BATCH_SIZE', 100),
+      batchTimeoutMs: getEnvAsIntOrDefault('WORKER_BATCH_TIMEOUT_MS', 500),
     },
   };
 }
@@ -74,15 +123,16 @@ export function loadConfig(): Config {
  */
 export function validateConfig(config: Config): string[] {
   const errors: string[] = [];
+  const isProduction = config.env === 'production';
 
   // Validate server config
   if (config.server.port < 1 || config.server.port > 65535) {
-    errors.push(`Invalid SERVER_PORT: ${config.server.port}. Must be between 1 and 65535.`);
+    errors.push(`Invalid PORT: ${config.server.port}. Must be between 1 and 65535.`);
   }
 
   // Validate Redis config
-  if (!config.redis.host) {
-    errors.push('REDIS_HOST is required');
+  if (!config.redis.url && !config.redis.host) {
+    errors.push('REDIS_URL or REDIS_HOST is required');
   }
   if (config.redis.port < 1 || config.redis.port > 65535) {
     errors.push(`Invalid REDIS_PORT: ${config.redis.port}. Must be between 1 and 65535.`);
@@ -92,7 +142,7 @@ export function validateConfig(config: Config): string[] {
   if (!config.mongo.uri) {
     errors.push('MONGO_URI is required');
   }
-  if (!config.mongo.uri.startsWith('mongodb://') && !config.mongo.uri.startsWith('mongodb+srv://')) {
+  if (config.mongo.uri && !config.mongo.uri.startsWith('mongodb://') && !config.mongo.uri.startsWith('mongodb+srv://')) {
     errors.push(`Invalid MONGO_URI: must start with mongodb:// or mongodb+srv://`);
   }
 
@@ -100,9 +150,35 @@ export function validateConfig(config: Config): string[] {
   if (!config.postgres.url) {
     errors.push('DATABASE_URL is required');
   }
-  if (!config.postgres.url.startsWith('postgresql://') && !config.postgres.url.startsWith('postgres://')) {
+  if (config.postgres.url && !config.postgres.url.startsWith('postgresql://') && !config.postgres.url.startsWith('postgres://')) {
     errors.push(`Invalid DATABASE_URL: must start with postgresql:// or postgres://`);
   }
 
+  // Validate auth config in production
+  if (isProduction) {
+    if (!config.auth.jwtSecret || config.auth.jwtSecret.length < 32) {
+      errors.push('JWT_SECRET must be at least 32 characters in production');
+    }
+    if (config.auth.jwtSecret === 'dev-secret-change-in-production') {
+      errors.push('JWT_SECRET must be changed from default in production');
+    }
+  }
+
+  // Validate worker config
+  if (config.worker.batchSize < 1 || config.worker.batchSize > 10000) {
+    errors.push(`Invalid WORKER_BATCH_SIZE: ${config.worker.batchSize}. Must be between 1 and 10000.`);
+  }
+
   return errors;
+}
+
+/**
+ * Get Redis URL (prefer REDIS_URL, fallback to host:port)
+ */
+export function getRedisUrl(config: Config): string {
+  if (config.redis.url) {
+    return config.redis.url;
+  }
+  const auth = config.redis.password ? `:${config.redis.password}@` : '';
+  return `redis://${auth}${config.redis.host}:${config.redis.port}`;
 }

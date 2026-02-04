@@ -158,8 +158,74 @@ npm run prisma:studio    # UI de base de datos
 
 - Logs estructurados JSON (Pino.js)
 - Health checks en `/api/health`, `/api/ready`, `/api/live`
-- Métricas de EPS y latencia (próximamente)
+- Métricas de EPS y latencia
+
+## 🧪 Testing
+
+```bash
+# Backend
+cd backend
+npm run test:unit        # Unit tests
+npm run test:integration # Integration tests (Testcontainers)
+npm run test:e2e         # E2E tests
+npm run test:all         # Toda la suite
+npm run test:coverage    # Con coverage HTML
+
+# Frontend
+cd frontend
+npm run test             # Unit tests
+npm run test:coverage    # Con coverage
+npm run test:e2e         # Playwright E2E
+
+# Load Testing
+k6 run k6-load-test.js   # Prueba de carga con métricas p95/p99
+```
+
+## 🚀 Deployment (Railway)
+
+### 1. Configurar Railway
+
+1. Conecta tu repositorio GitHub a Railway
+2. Configura los servicios en Railway Dashboard:
+   - **Backend**: Usa `infrastructure/Dockerfile.backend`
+   - **Worker** (x3 réplicas): Usa `infrastructure/Dockerfile.worker`
+   - **Frontend**: Usa `infrastructure/Dockerfile.frontend`
+3. Añade los plugins:
+   - PostgreSQL
+   - MongoDB
+   - Redis
+
+### 2. Variables de Entorno (Railway)
+
+```
+# Backend & Workers
+DATABASE_URL=${{ Postgres.DATABASE_URL }}
+MONGO_URI=${{ MongoDB.MONGO_URL }}
+REDIS_URL=${{ Redis.REDIS_URL }}
+JWT_SECRET=<generar con: openssl rand -base64 48>
+NODE_ENV=production
+LOG_LEVEL=info
+
+# Workers (adicional)
+CONSUMER_NAME=${{ RAILWAY_REPLICA_ID }}
+WORKER_BATCH_SIZE=100
+
+# Frontend
+VITE_API_URL=https://<tu-backend>.up.railway.app
+```
+
+### 3. CI/CD Pipeline
+
+El pipeline de GitHub Actions (`.github/workflows/ci-cd.yml`) se ejecuta en cada push a `main`:
+
+1. **Lint & Type Check**: Valida código
+2. **Unit Tests**: Tests rápidos
+3. **Integration Tests**: Redis + MongoDB reales
+4. **Docker Build**: Valida imágenes
+5. **Deploy**: Despliega a Railway automáticamente
+
+Añade `RAILWAY_TOKEN` como secret en GitHub para el deploy automático.
 
 ---
 
-**Stack**: Node.js 20 | Fastify | TypeScript | React | Vite | MongoDB 7 | PostgreSQL 16 | Redis 7 | Docker
+**Stack**: Node.js 20 | Fastify | TypeScript | React | Vite | MongoDB 7 | PostgreSQL 16 | Redis 7 | Docker | Railway

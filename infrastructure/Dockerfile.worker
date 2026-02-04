@@ -78,13 +78,9 @@ COPY --from=builder /app/backend/package.json ./backend/
 COPY --from=builder /app/backend/prisma ./backend/prisma
 COPY --from=builder /app/package.json ./
 
-# Set environment
+# Set environment defaults (override via Railway env vars)
 ENV NODE_ENV=production
-ENV MONGO_URI=mongodb://mongos:27017
-ENV MONGO_DATABASE=event_processor
-ENV DATABASE_URL=postgresql://postgres:postgres@postgres:5432/event_processor?schema=public
-ENV REDIS_HOST=redis
-ENV REDIS_PORT=6379
+ENV LOG_LEVEL=info
 
 # Switch to non-root user
 USER worker
@@ -92,4 +88,5 @@ USER worker
 WORKDIR /app/backend
 
 # Worker entry point
+# CONSUMER_NAME will be set by Railway via RAILWAY_REPLICA_ID
 CMD ["node", "dist/worker.js"]

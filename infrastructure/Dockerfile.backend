@@ -82,10 +82,11 @@ COPY --from=builder /app/package.json ./
 COPY infrastructure/scripts/start-backend.sh /app/start-backend.sh
 RUN chmod +x /app/start-backend.sh
 
-# Set environment
+# Set environment defaults (override via Railway env vars)
 ENV NODE_ENV=production
 ENV SERVER_HOST=0.0.0.0
-ENV SERVER_PORT=3001
+ENV LOG_LEVEL=info
+# PORT will be set by Railway automatically
 
 # Switch to non-root user
 USER backend
