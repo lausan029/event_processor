@@ -65,18 +65,14 @@ export async function updateBatchMetrics(
     // Set TTL to prevent stale data
     pipeline.expire(METRICS_KEY, METRICS_TTL);
 
-    // Update rolling EPS calculation (events in last minute)
-    const epsKey = `metrics:eps:${Math.floor(Date.now() / 1000)}`;
+    // Update rolling EPS calculation (events per second buckets)
+    // Use current second timestamp as key
+    const currentSecond = Math.floor(Date.now() / 1000);
+    const epsKey = `metrics:eps:${currentSecond}`;
     pipeline.incrby(epsKey, batchSize);
     pipeline.expire(epsKey, 120);  // Keep for 2 minutes
 
     await pipeline.exec();
-
-    logger.debug({
-      batchSize,
-      processingTimeMs,
-      uniqueTypes: Object.keys(typeCount).length
-    }, 'Metrics updated');
 
   } catch (error) {
     logger.error({ error }, 'Failed to update metrics');
@@ -130,12 +126,29 @@ export async function getRealtimeMetrics(): Promise<RealtimeMetrics> {
 
   const counts = await redis.mget(...keys);
   for (const count of counts) {
-    if (count !== null) {
+    if (count !== null && count !== '0') {
       totalEventsLastMinute += parseInt(count, 10);
     }
   }
 
-  const eventsPerSecond = Math.round(totalEventsLastMinute / 60);
+  // Calculate EPS: total events in last minute / 60 seconds
+  // If we have recent activity (last 10 seconds), use a shorter window for more responsive rate
+  const recentKeys: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    recentKeys.push(`metrics:eps:${now - i}`);
+  }
+  const recentCounts = await redis.mget(...recentKeys);
+  let recentEvents = 0;
+  for (const count of recentCounts) {
+    if (count !== null && count !== '0') {
+      recentEvents += parseInt(count, 10);
+    }
+  }
+
+  // Use recent 10-second window if there's activity, otherwise use full minute
+  const eventsPerSecond = recentEvents > 0 
+    ? Math.round(recentEvents / 10)  // More responsive: events in last 10 seconds / 10
+    : Math.round(totalEventsLastMinute / 60);  // Fallback: events in last minute / 60
 
   // Extract events by type
   const eventsByType: Record<string, number> = {};

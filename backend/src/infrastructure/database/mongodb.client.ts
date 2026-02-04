@@ -99,14 +99,17 @@ export async function closeMongoClient(): Promise<void> {
 export async function bulkWriteEvents(events: StoredEvent[]): Promise<BulkWriteResult> {
   const collection = getEventsCollection();
   
+  const now = new Date();
+  
   const operations = events.map(event => ({
     insertOne: {
       document: {
         ...event,
-        // Ensure timestamps are Date objects
-        timestamp: new Date(event.timestamp),
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        // Ensure timestamps are Date objects (not strings)
+        timestamp: event.timestamp instanceof Date ? event.timestamp : new Date(event.timestamp),
+        createdAt: now,  // Use same timestamp for all events in batch for consistency
+        updatedAt: now,
+        processedAt: now,
       },
     },
   }));
