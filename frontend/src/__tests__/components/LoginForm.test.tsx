@@ -165,7 +165,10 @@ describe('LoginForm', () => {
       
       // Type code digits
       for (let i = 0; i < 6; i++) {
-        fireEvent.change(inputs[i], { target: { value: String(i + 1) } });
+        const input = inputs[i];
+        if (input) {
+          fireEvent.change(input, { target: { value: String(i + 1) } });
+        }
       }
       
       await waitFor(() => {

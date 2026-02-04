@@ -41,6 +41,8 @@ const AnalyticsDashboard: React.FC = () => {
       const interval = setInterval(fetchMetrics, 10000); // Refresh every 10s
       return () => clearInterval(interval);
     }
+    
+    return undefined;
   }, [timeRange, eventTypeFilter, userIdSearch, autoRefresh]);
 
   const formatNumber = (num: number) => {
