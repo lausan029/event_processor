@@ -14,6 +14,10 @@
     "worker:prod": "node dist/worker.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:unit": "vitest run src/__tests__/unit",
+    "test:integration": "vitest run src/__tests__/integration --pool=forks --poolOptions.forks.singleFork=true",
+    "test:e2e": "vitest run src/__tests__/e2e --pool=forks --poolOptions.forks.singleFork=true",
+    "test:all": "vitest run --pool=forks --poolOptions.forks.singleFork=true",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/",
     "prisma:generate": "prisma generate",
@@ -26,7 +30,7 @@
     "@fastify/cors": "^8.5.0",
     "@fastify/helmet": "^11.1.1",
     "@fastify/rate-limit": "^9.1.0",
-    "@fastify/swagger": "^8.14.0",
+    "@fastify/swagger": "^8.15.0",
     "@fastify/swagger-ui": "^2.1.0",
     "@prisma/client": "^5.9.1",
     "ajv": "^8.12.0",
@@ -40,17 +44,21 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
+    "@testcontainers/mongodb": "^11.11.0",
+    "@testcontainers/postgresql": "^11.11.0",
     "@types/node": "^20.11.10",
+    "@types/supertest": "^6.0.3",
     "@types/uuid": "^9.0.8",
     "@typescript-eslint/eslint-plugin": "^6.20.0",
     "@typescript-eslint/parser": "^6.20.0",
-    "@vitest/coverage-v8": "^1.2.2",
+    "@vitest/coverage-v8": "^1.6.1",
     "eslint": "^8.56.0",
     "prisma": "^5.9.1",
-    "testcontainers": "^10.6.0",
+    "supertest": "^7.2.2",
+    "testcontainers": "^10.28.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
-    "vitest": "^1.2.2"
+    "vitest": "^1.6.1"
   },
   "engines": {
     "node": ">=20.0.0"
